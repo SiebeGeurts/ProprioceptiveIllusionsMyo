@@ -1,11 +1,24 @@
 import os
+import sys
 import numpy as np
 import h5py
 import opensim as osim
+import musclemimic_models as mm
+import mujoco as mj
+
 import argparse
 from scipy.signal import savgol_filter
 from tqdm import tqdm
-from data_generation.extract_flag3d_data_utils import BuildDatasetForFLAG3D, convert_to_joint_angles, convert_to_muscle_lengths
+
+
+# Ensure the workspace root is on sys.path when running the script directly
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from data_generation.extract_flag3d_data_utils import BuildDatasetForFLAG3D, convert_to_joint_angles, convert_to_muscle_lengths, convert_to_muscle_lengths_myo, remove_arm
+from mujoco_converter import MyoSuiteConverter
+
 
 def compute_jerk(joint_trajectory, sampling_rate=120):
     """Compute the jerk in joint space for the obtained joint configurations.
@@ -24,22 +37,36 @@ def compute_jerk(joint_trajectory, sampling_rate=120):
 if __name__=="__main__":
     # define arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dir", type=str)
+    parser.add_argument("--dir", type=str, required=True)
     parser.add_argument("--start_indx", type=int, default=0)
     parser.add_argument("--end_indx", type=int, default=7200)
+    parser.add_argument("--use_mujoco", action="store_true", help="Use MyoSuite instead of OpenSim for muscle lengths")
+    parser.add_argument("--arm", choices=["right", "left"], default="right", help="Choose the arm side for MyoSuite")
     params = parser.parse_args()
 
     path_to_hdf5 = os.path.join(params.dir, "FLAG3D/")
     os.makedirs(path_to_hdf5, exist_ok=True)
 
     path_to_keypoints = os.path.join(params.dir, "flag3d_keypoint.pkl")
-    path_to_model = os.path.join(params.dir, 'MOBL_ARMS_41_seb_writing_pos.osim')
+    # path_to_model = os.path.join(params.dir, 'MOBL_ARMS_41_seb_writing_pos.osim')
 
-    osim_model = osim.Model(path_to_model)
+    # if not params.use_mujoco:
+    #     osim_model = osim.Model(path_to_model)
+    # else:
+    #     osim_model = None
+    # myomodel, myodata = mm.load('bimanual')
+    myomodel = remove_arm('right')
+    myodata = mj.MjData(myomodel)
+
+    use_left_arm = params.arm == "left"
+    if params.use_mujoco:
+        converter = MyoSuiteConverter(use_left_arm=use_left_arm)
+    else:
+        converter = None
 
     dataset_generator = BuildDatasetForFLAG3D(dataset_dir=path_to_keypoints, 
                                                 dataset_type="all", 
-                                                path_to_osim=path_to_model,
+                                                # path_to_osim=path_to_model,
                                                 path_to_hdf5=path_to_hdf5,
                                                 start_indx=params.start_indx,
                                                 end_indx=params.end_indx,
@@ -73,7 +100,11 @@ if __name__=="__main__":
                     print(f"Skipped! Jerk: {smooth_jerk}")
                     continue
 
-                muscle_lengths, wrist, elbow = convert_to_muscle_lengths(osim_model, joint_coords)
+                if params.use_mujoco:
+                    muscle_lengths, shoulder, wrist, elbow = converter.convert_joint_angles_to_muscle_lengths_with_markers(joint_coords)
+                else:
+                    muscle_lengths, wrist, elbow = convert_to_muscle_lengths_myo(joint_coords,myomodel,myodata)
+
                 muscle_vel = np.gradient(muscle_lengths, 1/60, axis=-1)
                 if np.max(np.abs(muscle_vel)) > 1300:
                     print(f"Skipped! Max muscle velocity: {np.max(muscle_vel)}")
@@ -85,8 +116,12 @@ if __name__=="__main__":
                     myfile.create_dataset("endeffector_coords", data=new_coords[2].transpose((1,0)))
                     myfile.create_dataset("elbow_coords", data=new_coords[1].transpose((1,0)))
                     myfile.create_dataset("muscle_lengths", data=muscle_lengths)
-                    myfile.create_dataset("endeffector_coords_opensim", data=wrist.transpose((1,0)))
-                    myfile.create_dataset("elbow_coords_opensim", data=elbow.transpose((1,0)))
+                    if params.use_mujoco:
+                        myfile.create_dataset("endeffector_coords_mujoco", data=wrist.transpose((1,0)))
+                        myfile.create_dataset("elbow_coords_mujoco", data=elbow.transpose((1,0)))
+                    else:
+                        myfile.create_dataset("endeffector_coords_opensim", data=wrist.transpose((1,0)))
+                        myfile.create_dataset("elbow_coords_opensim", data=elbow.transpose((1,0)))
 
                 accepted_files.append(dataset_generator.path_to_hdf5+f"{extra}_{i}_{num}.hdf5")
 

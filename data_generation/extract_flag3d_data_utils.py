@@ -18,6 +18,9 @@ import torch
 from scipy.interpolate import interp1d
 from scipy.ndimage import median_filter
 from scipy.signal import savgol_filter
+import musclemimic_models as mm
+import mujoco as mj
+from mujoco import viewer
 
 from utils.visualize_sample import rotx, roty, rotz, transform
 
@@ -407,7 +410,7 @@ class BuildDatasetForFLAG3D:
         dataset_type="all",
         clip_len=1380,
         num_clips=1,
-        path_to_osim=None,
+        # path_to_osim=None,
         path_to_hdf5=None,
         augment=1,
         upperarm_length=33,
@@ -443,7 +446,7 @@ class BuildDatasetForFLAG3D:
         """
 
         # save the key variables
-        self.path_to_osim = path_to_osim
+        # self.path_to_osim = path_to_osim
         self.path_to_hdf5 = path_to_hdf5
         self.augment = augment
         self.upperarm_length = upperarm_length
@@ -685,6 +688,8 @@ class BuildDatasetForFLAG3D:
 
         print()
         print("Joint angles computed")
+    
+
 
     def compute_muscle_kin(self):
         """
@@ -696,7 +701,9 @@ class BuildDatasetForFLAG3D:
         #     skipped = pickle.load(myfile)
 
         # load the open sim model
-        osim_model = osim.Model(self.path_to_osim)
+        # osim_model = osim.Model(self.path_to_osim)
+        myomodel = remove_arm('right')
+        myodata = mj.MjData(myomodel)
 
         # go through each datapoint
         for extra in range(self.augment):  # 1):#
@@ -716,9 +723,10 @@ class BuildDatasetForFLAG3D:
                     ) as myfile:
                         joint_coords = myfile["joint_coords"][()]
 
-                    muscle_lengths, wrist, elbow = convert_to_muscle_lengths(
-                        osim_model, joint_coords
-                    )
+                    # muscle_lengths, wrist, elbow = convert_to_muscle_lengths(
+                    #     osim_model, joint_coords
+                    # )
+                    muscle_lengths, wrist, elbow = convert_to_muscle_lengths_myo(joint_coords, myomodel, myodata)
 
                     # if compute_jerk(muscle_lengths) > self.max_jerk:
                     #     skipped.append([extra, i])
@@ -1301,6 +1309,179 @@ def convert_to_muscle_lengths(model, joint_trajectory):
 
     return muscle_length_configurations, wrist, elbow
 
+def convert_to_muscle_lengths_myo(joint_trajectory,myomodel,myodata):
+    """
+    Compute muscle configurations of a given opensim model to given coordinate (joint angle) trajectories.
+
+    Arguments
+        model: opensim model object, the MoBL Dynamic Arm.
+        joint_trajectory: np.array, shape=(4, T) joint angles at each of T time points
+
+    Returns
+        muscle_length_configurations: np.array, shape=(25, T) muscle lengths at each of T time points
+    """
+    coordinate_map = {
+    0: 10,  # elv_angle -> elv_angle_r
+    1: 11,  # shoulder_elv -> shoulder_elv_r
+    2: 13,  # shoulder_rot -> shoulder_rot_r
+    3: 14,  # elbow_flexion -> elbow_flex_r
+    }
+    
+    muscle_actuator_map = {
+    'ANC': 18,
+    'BIClong': 20,
+    'BICshort': 21,
+    'BRA': 22,
+    'BRD': 23,
+    'CORB': 14,
+    'DELT1': 0,
+    'DELT2': 1,
+    'DELT3': 2,
+    'ECRL': 24,
+    'INFSP': 4,
+    'LAT1': 11,
+    'LAT2': 12,
+    'LAT3': 13,
+    'PECM1': 8,
+    'PECM2': 9,
+    'PECM3': 10,
+    'PT': 30,
+    'SUBSC': 5,
+    'SUPSP': 3,
+    'TMAJ': 7,
+    'TMIN': 6,
+    'TRIlat': 16,
+    'TRIlong': 15,
+    'TRImed': 17,
+    }
+    muscle_order = ['CORB', 
+                'DELT1', 
+                'DELT2', 
+                'DELT3', 
+                'INFSP', 
+                'LAT1', 
+                'LAT2', 
+                'LAT3',    
+                'PECM1', 
+                'PECM2', 
+                'PECM3', 
+                'SUBSC', 
+                'SUPSP', 
+                'TMAJ', 
+                'TMIN',    
+                
+                'ANC', 
+                'BIClong', 
+                'BICshort', 
+                'BRA', 
+                'BRD', 
+                'ECRL', 
+                'PT',    
+                'TRIlat', 
+                'TRIlong', 
+                'TRImed']
+    
+    markers = {
+                'shoulder': 'R.Shoulder_marker',
+                'elbow': 'R.Elbow.Lateral_marker',
+                'wrist': 's_wrist_r',
+            }
+    # initialize the open sim model
+    # init_state = model.initSystem()
+    # model.equilibrateMuscles(init_state)
+    # myomodel, myodata = mm.load('bimanual')
+
+    # Prepare for simulation
+    num_coords, num_timepoints = joint_trajectory.shape
+    # muscle_set = model.getMuscles()  # returns a Set<Muscles> object
+    num_muscles = len(muscle_order)
+
+    # Set the order of the coordinates
+    coord_order = ["elv_angle", "shoulder_elv", "shoulder_rot", "elbow_flexion"]
+
+    # get the markers
+    marker_list = {'shoulder':'R.Shoulder_marker',
+                   'elbow':'R.Elbow.Lateral_marker',
+                   'wrist':'s_wrist_r'}
+    marker_sites = {'shoulder': None, 'elbow': None, 'wrist': None}
+    site_names = myomodel.names.decode('utf-8') 
+    
+
+    for site_idx in range(myomodel.nsite):
+        site_name_adress = myomodel.name_siteadr[site_idx]
+        site_name = site_names[site_name_adress:site_names.find('\x00',site_name_adress)]
+
+        for key, mark in marker_list.items():
+            if site_name == mark:
+                marker_sites[key] = site_idx
+                # print(f"  Selected {key} at site[{site_idx}]: {site_name}")
+    # for simplicity
+    ind_shoulder = 0
+    ind_elbow = 1
+    ind_wrist = 2
+
+    # For each time step of the trajectory, compute equibrium muscle states
+    # Create a dictionary of muscle configurations
+    muscle_config = {}
+    for i in range(num_muscles):
+        muscle_config[muscle_order[i]] = np.zeros(num_timepoints)
+
+    wrist = np.zeros((num_timepoints, 3))
+    elbow = np.zeros((num_timepoints, 3))
+    shoulder = np.zeros((num_timepoints, 3))
+
+    # muscle_lengths = np.zeros((25,num_timepoints))
+    # perform the simulation
+
+    # precalc all radians
+    joint_rad = np.deg2rad(joint_trajectory)
+    coord_dst = np.array([10,11,13,14])
+    coord_src = np.array([0,1,2,3])
+
+    for timepoint in range(num_timepoints):
+
+        # compute the muscle lengths
+        # for i,m in coordinate_map.items():
+        #     angle = np.deg2rad(joint_trajectory[i,timepoint])
+        #     myodata.qpos[m] = angle
+
+        myodata.qpos[coord_dst] = joint_rad[coord_src,timepoint]
+        mj.mj_forward(myomodel,myodata)
+        # mj.mj_tendon(myomodel,myodata)
+        # viewer.launch(myomodel,myodata)
+        for muscle in muscle_order:
+            # muscle_idx = muscle_order.index(muscle)
+            
+            actuator_idx = muscle_actuator_map[muscle]
+            muscle_config[muscle][timepoint] = myodata.actuator_length[actuator_idx] * 1000
+            # print(f"  {muscle}: {myodata.actuator_length[actuator_idx]}")
+
+        
+
+        shoulder[timepoint] = myodata.site_xpos[marker_sites["shoulder"]]
+        elbow[timepoint] = myodata.site_xpos[marker_sites['elbow']]
+        wrist[timepoint] = myodata.site_xpos[marker_sites['wrist']]
+
+        
+
+    # Not sure if next part is needed
+    # for i in list(muscle_config.keys()):
+    #     muscle_config[i] = savgol_filter(median_filter(muscle_config[i], 7), 5, 2)
+
+    # convert to a numpy array
+    muscle_length_configurations = make_muscle_matrix(muscle_config)
+    # muscle_length_configurations_delete_later = make_muscle_matrix(muscle_config_delete_later)
+
+    # recenter and scale
+    wrist -= shoulder
+    elbow -= shoulder
+    shoulder -= shoulder
+    wrist = rotz(180).dot(transform().dot(wrist.T)).T * 116.6
+    elbow = rotz(180).dot(transform().dot(elbow.T)).T * 116.6
+
+    
+
+    return muscle_length_configurations, wrist, elbow
 
 def make_muscle_matrix(muscle_config):
     # Arrange muscles configurations in a 25xT matrix, given a dictionary of muscle configurations.
@@ -1442,7 +1623,7 @@ def split_data_set(folderpath):
     """
 
     # load the data
-    with h5py.File(folderpath + "flag3d_raw.hdf5", "r") as myfile:
+    with h5py.File(folderpath + "all.hdf5", "r") as myfile:
         label = myfile["label"][()]
         endeffector_coords = myfile["endeffector_coords"][()]
         elbow_coords = myfile["elbow_coords"][()]
@@ -1501,3 +1682,43 @@ def compute_jerk(joint_trajectory, sampling_rate=120):
     joint_jerk = np.gradient(joint_acc, 1, axis=1)
     jerk = np.linalg.norm(joint_jerk, axis=0)
     return np.max(jerk)
+
+def remove_arm(keep="right", xml_path=None):
+    """Compile a bimanual model with the unused arm removed entirely.
+
+    Deletes that arm's actuators, tendons, and full body subtree, then prunes
+    equalities, sensors, and contacts that referenced the deleted parts.
+    """
+    assert keep in ("right", "left")
+    drop_left = (keep == "right")
+    spec = mj.MjSpec.from_file(xml_path or str(mm.get_xml_path("bimanual")))
+
+    # 1. Muscles (actuators) and tendons of the removed side ('_left' == left arm).
+    for a in list(spec.actuators):
+        if a.name.endswith("_left") == drop_left:
+            spec.delete(a)
+    for t in list(spec.tendons):
+        if t.name.endswith("_left") == drop_left:
+            spec.delete(t)
+
+    # 2. The arm's root body; deleting it removes the subtree (bodies, joints, sites).
+    spec.delete(spec.body("clavicle_l" if drop_left else "clavicle_r"))
+
+    # 3. Prune anything that still points at a deleted name.
+    bodies = {b.name for b in spec.bodies}
+    geoms  = {g.name for g in spec.geoms if g.name}
+    joints = {j.name for j in spec.joints}
+    sites  = {s.name for s in spec.sites if s.name}
+    for e in list(spec.equalities):                       # joint couplers
+        if e.name1 not in joints or (e.name2 and e.name2 not in joints):
+            spec.delete(e)
+    for s in list(spec.sensors):                          # per-body velocity sensors
+        if s.objname and s.objname not in (bodies | geoms | joints | sites):
+            spec.delete(s)
+    for ex in list(spec.excludes):                        # contact-exclude pairs
+        if ex.bodyname1 not in bodies or ex.bodyname2 not in bodies:
+            spec.delete(ex)
+    for p in list(spec.pairs):                            # explicit contact pairs
+        if p.geomname1 not in geoms or p.geomname2 not in geoms:
+            spec.delete(p)
+    return spec.compile()

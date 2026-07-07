@@ -4,9 +4,13 @@ import h5py
 import os
 import csv
 import opensim as osim
+import musclemimic_models as mm
+import mujoco as mj
 from directory_paths import SAVE_DIR, PARENT_DIR
 
-with h5py.File(os.path.join(SAVE_DIR, "data/cleaned_smooth/flag_pcr_train.hdf5"), 'r') as f:
+# with h5py.File(os.path.join(SAVE_DIR, "data/cleaned_smooth/flag_pcr_train.hdf5"), 'r') as f:
+
+with h5py.File(os.path.join(SAVE_DIR, "/media1/siebe/datasets/FLAG3D/flag3d_train_smoothed.hdf5"), 'r') as f:
     muscle_lengths = f['muscle_lengths'][()]
     muscle_velocities = f['muscle_velocities'][()]
     muscle_accelerations = f['muscle_accelerations'][()]
@@ -18,7 +22,7 @@ MUSCLE_NAMES_FOR_ELBOW = ['CORB', 'DELT1', 'DELT2', 'DELT3', 'INFSP', 'LAT1', 'L
                           'BICshort', 'BRA', 'BRD', 'ECRL', 'PT', 'TRIlat', 'TRIlong', 'TRImed']
 
 
-PATH_TO_OSIM = os.path.join(SAVE_DIR, "data/raw/MOBL_ARMS_41_seb_writing_pos.osim")
+# PATH_TO_OSIM = os.path.join(SAVE_DIR, "data/raw/MOBL_ARMS_41_seb_writing_pos.osim")
 # ------------------------------------------------------------------------------------------------------
 
 def get_optimal_fiber_length():
@@ -28,21 +32,27 @@ def get_optimal_fiber_length():
     '''
 
     # initialize the arm
-    model = osim.Model(PATH_TO_OSIM)
-    init_state = model.initSystem()
-    model.equilibrateMuscles(init_state)
+    # model = osim.Model(PATH_TO_OSIM)
+    # init_state = model.initSystem()
+    # model.equilibrateMuscles(init_state)
+
+    myomodel,myodata = mm.load('bimanual')
 
     # get the muscles
-    muscle_set = model.getMuscles()
 
-    # to save the lengths
+#     muscle_set = model.getMuscles()
+
+#     # to save the lengths
     optimal_length = np.zeros(25)
-
-    # saves the muscle's optimal fiber lengths
-    for muscle in muscle_set:
-        if muscle.getName() in MUSCLE_NAMES_FOR_ELBOW:
-            optimal_length[MUSCLE_NAMES_FOR_ELBOW.index(muscle.getName())] = (muscle.get_optimal_fiber_length())*MUSCLE_SCALE
-
+    for i in range(len(optimal_length)):
+        optimal_length[i] = myomodel.actuator(MUSCLE_NAMES_FOR_ELBOW[i]).length0[0]*1000
+    # print(optimal_length)
+#     # saves the muscle's optimal fiber lengths
+#     for muscle in muscle_set:
+#         if muscle.getName() in MUSCLE_NAMES_FOR_ELBOW:
+#             optimal_length[MUSCLE_NAMES_FOR_ELBOW.index(muscle.getName())] = (muscle.get_optimal_fiber_length())*MUSCLE_SCALE
+    print(f"Optimal fiber lengths: {optimal_length}")
+    
     return optimal_length
 
 optimal_length = get_optimal_fiber_length()
@@ -52,9 +62,10 @@ normalized_muscle_velocities = np.zeros_like(muscle_velocities)
 normalized_muscle_accelerations = np.zeros_like(muscle_accelerations)
 
 for i in range(25):
-    normalized_muscle_lengths[:, i, :] = muscle_lengths[:, i, :] / optimal_length[i] - 1
+    normalized_muscle_lengths[:, i, :] = muscle_lengths[:, i, :] / optimal_length[i] -1
     normalized_muscle_velocities[:, i, :] = muscle_velocities[:, i, :] / optimal_length[i]
     normalized_muscle_accelerations[:, i, :] = muscle_accelerations[:, i, :] / optimal_length[i]
+
 
 def spindle_transfer_function(length, velocity, acceleration, k_l, k_v, e_v, k_a, k_c):
     firing_rate = k_l * length + k_v * np.sign(velocity) * np.abs(velocity) ** e_v + k_a * acceleration + k_c
@@ -78,7 +89,7 @@ from scipy.optimize import differential_evolution
 
 spindle_i_a_range = (50, 180)
 spindle_ii_range = (20, 50)
-constant_e_v = 1
+constant_e_v = 0.6 # 1
 
 lambda_reg = 1000
 
@@ -98,7 +109,7 @@ for m in range(25):
     frac_zero_list = []
     max_rate_list = []
 
-    for i in range(30):
+    for i in range(10):
         print(f'Optimizing muscle {m}, iteration {i}')
 
         target_zero = np.random.uniform(0.00, 0.3)
@@ -122,23 +133,26 @@ for m in range(25):
         )
 
         k_l, k_v, e_v, k_a, k_c = result.x
+        
         rates = spindle_transfer_function(lengths, velocities, accelerations, k_l, k_v, e_v, k_a, k_c)
         max_rate = np.max(rates)
         frac_zero = np.mean(rates == 0)
 
+        
         print(f'Optimal parameters: {result.x}')
         print(f'Max firing rate: {max_rate} (target: {target_fmax})')
         print(f'Fraction of zero firing rates: {frac_zero} (target: {target_zero})')
 
-        k_l_list.append(k_l)
-        k_v_list.append(k_v)
-        e_v_list.append(e_v)
-        k_a_list.append(k_a)
-        k_c_list.append(k_c)
-        max_rate_list.append(max_rate)
-        frac_zero_list.append(frac_zero)
+        k_l_list.append(float(k_l))
+        k_v_list.append(float(k_v))
+        e_v_list.append(float(e_v))
+        k_a_list.append(float(k_a))
+        k_c_list.append(float(k_c))
+        max_rate_list.append(float(max_rate))
+        frac_zero_list.append(float(frac_zero))
 
 
+   
     parameters_per_muscle[m] = {
         'k_l': k_l_list,
         'k_v': k_v_list,
@@ -152,7 +166,7 @@ for m in range(25):
     print(f'Finished muscle {m}')
 
 
-with open(os.path.join(SAVE_DIR, "coefficients_i_a.csv"), 'w') as f:
+with open(os.path.join('/media1/siebe/ProprioceptiveIllusionsMyo/newspindledata/', "coefficients_i_a.csv"), 'w') as f:
     writer = csv.writer(f)
     writer.writerow(['Muscle', 'k_l', 'k_v', 'e_v', 'k_a', 'k_c', 'max_rate', 'frac_zero'])
     for m in range(25):
@@ -179,7 +193,7 @@ for m in range(25):
     frac_zero_list = []
     max_rate_list = []
 
-    for i in range(30):
+    for i in range(10):
         print(f'Optimizing muscle {m}, iteration {i}')
 
         target_zero = np.random.uniform(0.00, 0.3)
@@ -211,13 +225,14 @@ for m in range(25):
         print(f'Max firing rate: {max_rate} (target: {target_fmax})')
         print(f'Fraction of zero firing rates: {frac_zero} (target: {target_zero})')
 
-        k_l_list.append(k_l)
-        k_v_list.append(k_v)
-        e_v_list.append(e_v)
-        k_a_list.append(k_a)
-        k_c_list.append(k_c)
-        max_rate_list.append(max_rate)
-        frac_zero_list.append(frac_zero)
+
+        k_l_list.append(float(k_l))
+        k_v_list.append(float(k_v))
+        e_v_list.append(float(e_v))
+        k_a_list.append(float(k_a))
+        k_c_list.append(float(k_c))
+        max_rate_list.append(float(max_rate))
+        frac_zero_list.append(float(frac_zero))
 
 
     parameters_per_muscle[m] = {
@@ -232,7 +247,7 @@ for m in range(25):
 
     print(f'Finished muscle {m}')
 
-with open(os.path.join(SAVE_DIR, "coefficients_ii.csv"), 'w') as f:
+with open(os.path.join('/media1/siebe/ProprioceptiveIllusionsMyo/newspindledata/', "coefficients_ii.csv"), 'w') as f:
     writer = csv.writer(f)
     writer.writerow(['Muscle', 'k_l', 'k_v', 'e_v', 'k_a', 'k_c', 'max_rate', 'frac_zero'])
     for m in range(25):
