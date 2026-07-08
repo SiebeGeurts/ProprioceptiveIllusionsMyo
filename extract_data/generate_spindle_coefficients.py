@@ -44,8 +44,9 @@ def get_optimal_fiber_length():
 
 #     # to save the lengths
     optimal_length = np.zeros(25)
-    for i in range(len(optimal_length)):
-        optimal_length[i] = myomodel.actuator(MUSCLE_NAMES_FOR_ELBOW[i]).length0[0]*1000
+    for i in range(len(MUSCLE_NAMES_FOR_ELBOW)):
+        curr_muscle = myomodel.actuator(MUSCLE_NAMES_FOR_ELBOW[i])
+        optimal_length[i] = (curr_muscle.lengthrange[1] - curr_muscle.lengthrange[0]) / (curr_muscle.gainprm[1] - curr_muscle.gainprm[0]) *1000
     # print(optimal_length)
 #     # saves the muscle's optimal fiber lengths
 #     for muscle in muscle_set:
