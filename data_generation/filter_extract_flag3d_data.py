@@ -17,7 +17,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from data_generation.extract_flag3d_data_utils import BuildDatasetForFLAG3D, convert_to_joint_angles, convert_to_muscle_lengths, convert_to_muscle_lengths_myo, remove_arm
-from mujoco_converter import MyoSuiteConverter
+
 
 
 def compute_jerk(joint_trajectory, sampling_rate=120):
@@ -40,8 +40,6 @@ if __name__=="__main__":
     parser.add_argument("--dir", type=str, required=True)
     parser.add_argument("--start_indx", type=int, default=0)
     parser.add_argument("--end_indx", type=int, default=7200)
-    parser.add_argument("--use_mujoco", action="store_true", help="Use MyoSuite instead of OpenSim for muscle lengths")
-    parser.add_argument("--arm", choices=["right", "left"], default="right", help="Choose the arm side for MyoSuite")
     params = parser.parse_args()
 
     path_to_hdf5 = os.path.join(params.dir, "FLAG3D/")
@@ -58,11 +56,6 @@ if __name__=="__main__":
     myomodel = remove_arm('right')
     myodata = mj.MjData(myomodel)
 
-    use_left_arm = params.arm == "left"
-    if params.use_mujoco:
-        converter = MyoSuiteConverter(use_left_arm=use_left_arm)
-    else:
-        converter = None
 
     dataset_generator = BuildDatasetForFLAG3D(dataset_dir=path_to_keypoints, 
                                                 dataset_type="all", 
@@ -100,10 +93,8 @@ if __name__=="__main__":
                     print(f"Skipped! Jerk: {smooth_jerk}")
                     continue
 
-                if params.use_mujoco:
-                    muscle_lengths, shoulder, wrist, elbow = converter.convert_joint_angles_to_muscle_lengths_with_markers(joint_coords)
-                else:
-                    muscle_lengths, wrist, elbow = convert_to_muscle_lengths_myo(joint_coords,myomodel,myodata)
+                
+                muscle_lengths, wrist, elbow = convert_to_muscle_lengths_myo(joint_coords,myomodel,myodata)
 
                 muscle_vel = np.gradient(muscle_lengths, 1/60, axis=-1)
                 if np.max(np.abs(muscle_vel)) > 1300:
@@ -116,12 +107,8 @@ if __name__=="__main__":
                     myfile.create_dataset("endeffector_coords", data=new_coords[2].transpose((1,0)))
                     myfile.create_dataset("elbow_coords", data=new_coords[1].transpose((1,0)))
                     myfile.create_dataset("muscle_lengths", data=muscle_lengths)
-                    if params.use_mujoco:
-                        myfile.create_dataset("endeffector_coords_mujoco", data=wrist.transpose((1,0)))
-                        myfile.create_dataset("elbow_coords_mujoco", data=elbow.transpose((1,0)))
-                    else:
-                        myfile.create_dataset("endeffector_coords_opensim", data=wrist.transpose((1,0)))
-                        myfile.create_dataset("elbow_coords_opensim", data=elbow.transpose((1,0)))
+                    myfile.create_dataset("endeffector_coords_opensim", data=wrist.transpose((1,0)))
+                    myfile.create_dataset("elbow_coords_opensim", data=elbow.transpose((1,0)))
 
                 accepted_files.append(dataset_generator.path_to_hdf5+f"{extra}_{i}_{num}.hdf5")
 
