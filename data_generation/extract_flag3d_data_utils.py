@@ -1132,7 +1132,7 @@ def convert_to_muscle_lengths(model, joint_trajectory):
             muscle = muscle_set.get(muscle_num)
             name = muscle.getName()
             muscle_config[name][timepoint] = (
-                muscle.getFiberLength(init_state) * 1000
+                muscle.getFiberLength(init_state) * 1000 # Excluding tendon
             )  # change to mm
 
             # fix issue with ECRL
@@ -1386,9 +1386,15 @@ def convert_to_muscle_lengths_myo(joint_trajectory,myomodel,myodata):
                 'elbow': 'R.Elbow.Lateral_marker',
                 'wrist': 's_wrist_r',
             }
-    # initialize the open sim model
-    # init_state = model.initSystem()
-    # model.equilibrateMuscles(init_state)
+    
+    optimal_fiber_lengths = np.zeros(len(muscle_order))
+    static_tendon_lengths = np.zeros(len(muscle_order))
+    for idx, muscle in enumerate(muscle_order):
+        # muscle_idx = muscle_order.index(muscle)
+        curr_muscle = myomodel.actuator(muscle)
+        optimal_fiber_lengths[idx] = (curr_muscle.lengthrange[1] - curr_muscle.lengthrange[0]) / (curr_muscle.gainprm[1] - curr_muscle.gainprm[0])
+        static_tendon_lengths[idx] = curr_muscle.lengthrange[0] - curr_muscle.gainprm[0]*optimal_fiber_lengths[idx]
+   
     # myomodel, myodata = mm.load('bimanual')
 
     # Prepare for simulation
@@ -1449,11 +1455,11 @@ def convert_to_muscle_lengths_myo(joint_trajectory,myomodel,myodata):
         mj.mj_forward(myomodel,myodata)
         # mj.mj_tendon(myomodel,myodata)
         # viewer.launch(myomodel,myodata)
-        for muscle in muscle_order:
+        for idx, muscle in enumerate(muscle_order):
             # muscle_idx = muscle_order.index(muscle)
             
             actuator_idx = muscle_actuator_map[muscle]
-            muscle_config[muscle][timepoint] = myodata.actuator_length[actuator_idx] * 1000
+            muscle_config[muscle][timepoint] = (myodata.actuator_length[actuator_idx]-static_tendon_lengths[idx]) * 1000
             # print(f"  {muscle}: {myodata.actuator_length[actuator_idx]}")
 
         
