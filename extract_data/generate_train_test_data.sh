@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default base directory
-BASE_DIR="/media/data16/adriana/ProprioPerception"
+BASE_DIR="/media1/siebe/datasets"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -38,7 +38,7 @@ run_generation() {
 }
 
 INPUTS_FILES=(
-    "${BASE_DIR}/flag_pcr_training.hdf5"
+    "${BASE_DIR}/flag_pcr_train.hdf5"
     "${BASE_DIR}/flag_pcr_test.hdf5"
     "${BASE_DIR}/EF3D.hdf5"
     "${BASE_DIR}/ES3D.hdf5"

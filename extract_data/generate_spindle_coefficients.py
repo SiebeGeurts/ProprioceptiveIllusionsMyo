@@ -7,10 +7,11 @@ import opensim as osim
 import musclemimic_models as mm
 import mujoco as mj
 from directory_paths import SAVE_DIR, PARENT_DIR
+import sys
 
 # with h5py.File(os.path.join(SAVE_DIR, "data/cleaned_smooth/flag_pcr_train.hdf5"), 'r') as f:
 
-with h5py.File(os.path.join(SAVE_DIR, "/media1/siebe/datasets/FLAG3D/flag3d_train_smoothed.hdf5"), 'r') as f:
+with h5py.File(os.path.join(SAVE_DIR, "flag_pcr_train.hdf5"), 'r') as f:
     muscle_lengths = f['muscle_lengths'][()]
     muscle_velocities = f['muscle_velocities'][()]
     muscle_accelerations = f['muscle_accelerations'][()]
@@ -57,7 +58,9 @@ def get_optimal_fiber_length():
     return optimal_length
 
 optimal_length = get_optimal_fiber_length()
-
+np.save('/media1/siebe/ProprioceptiveIllusionsMyo/optimal_lengths.npy',optimal_length)
+print("saved optimal lengths!")
+sys.exit()
 normalized_muscle_lengths = np.zeros_like(muscle_lengths)
 normalized_muscle_velocities = np.zeros_like(muscle_velocities)
 normalized_muscle_accelerations = np.zeros_like(muscle_accelerations)
@@ -153,6 +156,7 @@ for m in range(25):
         frac_zero_list.append(float(frac_zero))
 
 
+
    
     parameters_per_muscle[m] = {
         'k_l': k_l_list,
@@ -167,7 +171,7 @@ for m in range(25):
     print(f'Finished muscle {m}')
 
 
-with open(os.path.join('/media1/siebe/ProprioceptiveIllusionsMyo/newspindledata/', "coefficients_i_a.csv"), 'w') as f:
+with open(os.path.join(SAVE_DIR, "coefficients_i_a.csv"), 'w') as f:
     writer = csv.writer(f)
     writer.writerow(['Muscle', 'k_l', 'k_v', 'e_v', 'k_a', 'k_c', 'max_rate', 'frac_zero'])
     for m in range(25):
@@ -248,7 +252,7 @@ for m in range(25):
 
     print(f'Finished muscle {m}')
 
-with open(os.path.join('/media1/siebe/ProprioceptiveIllusionsMyo/newspindledata/', "coefficients_ii.csv"), 'w') as f:
+with open(os.path.join(SAVE_DIR, "coefficients_ii.csv"), 'w') as f:
     writer = csv.writer(f)
     writer.writerow(['Muscle', 'k_l', 'k_v', 'e_v', 'k_a', 'k_c', 'max_rate', 'frac_zero'])
     for m in range(25):

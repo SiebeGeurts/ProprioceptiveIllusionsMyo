@@ -3,11 +3,14 @@ This file is used to train and save the models
 """
 
 import argparse
+import sys
+sys.path.append('/media1/siebe/ProprioceptiveIllusionsMyo')
 
 from directory_paths import MODELS_DIR, SAVE_DIR
 from model.model_definitions import SpatiotemporalNetwork, SpatiotemporalNetworkCausal
 from train.new_spindle_dataset import SpindleDataset
 from train.train_model_utils import *
+
 
 # ------------------------------------------------------------------------------------------------------
 # Defaults here, set the values desired for this training in the main function
@@ -30,7 +33,7 @@ DEFAULT_INPUT_SHAPE = [10, NUM_MUSCLES, TIME]  # num_input_channels x muscles x 
 DEFAULT_P_DROP = 0.7  # for letter recognition
 DEFAULT_SEED = 0
 
-DEFAULT_NUM_EPOCHS = 1000
+DEFAULT_NUM_EPOCHS = 100 #1000
 DEFAULT_BATCH_SIZE = 128  # 256
 DEFAULT_EARLY_STOP_MIN_EPOCH = 40
 DEFAULT_EARLY_STOPPING_EPOCHS = 5
@@ -212,7 +215,7 @@ if __name__ == "__main__":
                     "DATA_PATH_PREFIX", "optimized_linear_extended"
                 )
                 config["PATH_TO_DATA"] = (
-                    f"{data_dir}/{data_path_prefix}_{seed}_{n_aff}_{n_aff}_flag_pcr_training.hdf5"
+                    f"{data_dir}/{data_path_prefix}_{seed}_{n_aff}_{n_aff}_flag_pcr_train.hdf5"
                 )
                 config["BASE_DIR"] = base_dir
                 if config.get("EXPERIMENT_ID") is None:

@@ -6,11 +6,14 @@
 
 import argparse
 import os
-
+import sys
 import h5py
 import numpy as np
 import yaml
 from tqdm import tqdm
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
 from directory_paths import SAVE_DIR
 from utils.spindle_FR_helper import *
@@ -21,7 +24,8 @@ CONFIG_PATH = os.path.join(
     "configs/train_test_data_spindles_extended.yaml",
 )
 
-INPUT_FILE = f"{SAVE_DIR}/elbow_flex/elbow_flex_visualize_flat_100_240Hz.hdf5"
+# INPUT_FILE = f"{SAVE_DIR}/elbow_flex/elbow_flex_visualize_flat_100_240Hz.hdf5"
+INPUT_FILE = f"{SAVE_DIR}/"
 DEFAULT_SEEDS = [0]
 NUM_SAMPLES = 30000
 

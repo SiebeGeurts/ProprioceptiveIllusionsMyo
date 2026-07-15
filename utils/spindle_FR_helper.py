@@ -47,6 +47,7 @@ def load_coefficients(filepath):
     """
     Load spindle coefficients from a CSV file.
     """
+    
     coefficients = {}
     with open(filepath, "r") as f:
         reader = csv.reader(f)
@@ -1058,6 +1059,7 @@ def plot_vibration_analysis(df, save_path, swap_elbow_angle=False):
         save_path (str): Directory to save the generated plot.
     """
     # Define elbow angle ranges
+    import pandas as pd
     if swap_elbow_angle:
         df["elbow_angle"] = 180 - df["elbow_angle"]
         elbow_angle_ranges = [30, 60, 90, 120, 150, 180]
