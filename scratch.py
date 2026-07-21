@@ -10,6 +10,18 @@ import opensim as osim
 import pickle
 from pathlib import Path
 import utils.spindle_FR_helper as spindler
+from utils.muscle_names import MUSCLE_NAMES
+
+# name -> raw MuJoCo actuator index in the 'bimanual' model (myoarm_bimanual.xml),
+# same mapping used in data_generation/extract_flag3d_data_utils.py's
+# convert_to_muscle_lengths_myo.
+MUSCLE_ACTUATOR_MAP = {
+    'ANC': 18, 'BIClong': 20, 'BICshort': 21, 'BRA': 22, 'BRD': 23,
+    'CORB': 14, 'DELT1': 0, 'DELT2': 1, 'DELT3': 2, 'ECRL': 24,
+    'INFSP': 4, 'LAT1': 11, 'LAT2': 12, 'LAT3': 13, 'PECM1': 8,
+    'PECM2': 9, 'PECM3': 10, 'PT': 30, 'SUBSC': 5, 'SUPSP': 3,
+    'TMAJ': 7, 'TMIN': 6, 'TRIlat': 16, 'TRIlong': 15, 'TRImed': 17,
+}
 
 def shape(data):
     return np.asarray(data).shape
@@ -390,6 +402,225 @@ def plot_3d_trajectory(shoulder_coords, elbow_coords, endeffector_coords,
     
     return fig, ax
 
+
+
+def _get_myoarm_calibration(myomodel, muscle_order):
+    """
+    Per-muscle L0 (optimal length), rigid-tendon static offset, and
+    calibrated lengthrange span, in mm, read from the MyoArm model's own
+    lengthrange/gainprm -- the same formula used throughout this repo
+    (generate_spindle_coefficients.py, convert_to_muscle_lengths_myo).
+    """
+    n_muscles = len(muscle_order)
+    optimal_lengths_mm = np.zeros(n_muscles)
+    static_tendon_lengths_mm = np.zeros(n_muscles)
+    calibrated_span_mm = np.zeros(n_muscles)
+    for idx, muscle in enumerate(muscle_order):
+        act = myomodel.actuator(muscle)
+        l0 = (act.lengthrange[1] - act.lengthrange[0]) / (act.gainprm[1] - act.gainprm[0])
+        optimal_lengths_mm[idx] = l0 * 1000
+        static_tendon_lengths_mm[idx] = (act.lengthrange[0] - act.gainprm[0] * l0) * 1000
+        calibrated_span_mm[idx] = (act.lengthrange[1] - act.lengthrange[0]) * 1000
+    return optimal_lengths_mm, static_tendon_lengths_mm, calibrated_span_mm
+
+
+def simulate_trial_and_estimate_optimal_lengths(joint_trajectory, myomodel=None, myodata=None, verbose=True):
+    """
+    Replay one (4, T) joint trajectory through the MuJoCo 'bimanual' model,
+    the same way convert_to_muscle_lengths_myo in
+    data_generation/extract_flag3d_data_utils.py does, and record both the
+    raw rigid-tendon muscle-tendon length and the tendon-subtracted fiber
+    length for all 25 muscles at every timestep.
+
+    The point is to check MyoArm's calibrated optimal length (derived from
+    lengthrange/gainprm, which was fit by sweeping the model's full joint
+    range of motion) against what a muscle's length actually does during a
+    real movement -- if a muscle only ever explores a fraction of its
+    calibrated span during real trials, that calibrated L0 is likely not a
+    meaningful "optimal length" for this task.
+
+    Parameters
+    ----------
+    joint_trajectory : np.ndarray, shape (4, T)
+        elv_angle, shoulder_elv, shoulder_rot, elbow_flexion in degrees,
+        same convention/order as convert_to_muscle_lengths_myo.
+    myomodel, myodata : mujoco model/data, optional
+        Reuse an already-loaded 'bimanual' model/data pair. If omitted, a
+        fresh one is loaded (mm.load is not cheap, so pass these in when
+        simulating many trials in a loop).
+    verbose : bool
+        If True, prints a per-muscle table comparing the length range
+        actually observed in this trial to MyoArm's calibrated span.
+
+    Returns
+    -------
+    dict with keys:
+        muscle_order             : list[str], length 25, CORB..TRImed
+        raw_lengths_mm            : (25, T) rigid-tendon actuator length
+        fiber_lengths_mm          : (25, T) raw length minus the static
+                                     tendon offset (lengthrange[0] -
+                                     gainprm[0]*L0), i.e. the fiber-only
+                                     length under MyoArm's rigid-tendon model
+        optimal_lengths_mm        : (25,) MyoArm's calibrated L0
+        static_tendon_lengths_mm  : (25,)
+        observed_min_mm/observed_max_mm : (25,) length range actually seen
+                                           in this trial
+    """
+    if myomodel is None or myodata is None:
+        myomodel, myodata = mm.load('bimanual')
+
+    muscle_order = list(MUSCLE_NAMES)
+    n_muscles = len(muscle_order)
+    _, n_timepoints = joint_trajectory.shape
+
+    optimal_lengths_mm, static_tendon_lengths_mm, calibrated_span_mm = _get_myoarm_calibration(myomodel, muscle_order)
+
+    # elv_angle_r, shoulder_elv_r, shoulder_rot_r, elbow_flex_r qpos indices,
+    # matching the coordinate mapping in convert_to_muscle_lengths_myo.
+    coord_dst = np.array([10, 11, 13, 14])
+    coord_src = np.array([0, 1, 2, 3])
+    joint_rad = np.deg2rad(joint_trajectory)
+
+    raw_lengths_mm = np.zeros((n_muscles, n_timepoints))
+    for t in range(n_timepoints):
+        myodata.qpos[coord_dst] = joint_rad[coord_src, t]
+        mj.mj_forward(myomodel, myodata)
+        for idx, muscle in enumerate(muscle_order):
+            actuator_idx = MUSCLE_ACTUATOR_MAP[muscle]
+            raw_lengths_mm[idx, t] = myodata.actuator_length[actuator_idx] * 1000
+
+    # actual muscle fiber length across the trial: subtract the constant
+    # rigid-tendon offset from the raw MTU length at every timestep.
+    fiber_lengths_mm = raw_lengths_mm - static_tendon_lengths_mm[:, None]
+
+    observed_min_mm = raw_lengths_mm.min(axis=1)
+    observed_max_mm = raw_lengths_mm.max(axis=1)
+    observed_span_mm = observed_max_mm - observed_min_mm
+
+    if verbose:
+        header = f"{'muscle':10s} {'obs_min':>8s} {'obs_max':>8s} {'obs_span':>9s} {'calib_span':>11s} {'%_of_calib':>11s} {'L0_mujoco':>10s}"
+        print(header)
+        for idx, muscle in enumerate(muscle_order):
+            pct = 100 * observed_span_mm[idx] / calibrated_span_mm[idx] if calibrated_span_mm[idx] > 0 else float("nan")
+            print(
+                f"{muscle:10s} {observed_min_mm[idx]:8.1f} {observed_max_mm[idx]:8.1f} "
+                f"{observed_span_mm[idx]:9.1f} {calibrated_span_mm[idx]:11.1f} {pct:10.1f}% "
+                f"{optimal_lengths_mm[idx]:10.1f}"
+            )
+
+    return {
+        "muscle_order": muscle_order,
+        "raw_lengths_mm": raw_lengths_mm,
+        "fiber_lengths_mm": fiber_lengths_mm,
+        "optimal_lengths_mm": optimal_lengths_mm,
+        "static_tendon_lengths_mm": static_tendon_lengths_mm,
+        "observed_min_mm": observed_min_mm,
+        "observed_max_mm": observed_max_mm,
+    }
+
+
+def aggregate_observed_muscle_length_ranges(
+    hdf5_path, joint_coords_key="joint_coords", n_trials=300, myomodel=None, myodata=None, seed=0, label=None
+):
+    """
+    Run many trials' joint trajectories from an hdf5 dataset (PCR, FLAG3D,
+    ...) through the MuJoCo 'bimanual' model and aggregate the observed
+    muscle length range (min/max across all sampled trials and timepoints)
+    per muscle, to compare against MyoArm's calibrated lengthrange span.
+
+    This is the multi-trial version of simulate_trial_and_estimate_optimal_lengths:
+    a single trial only shows a slice of a muscle's real operating range, so
+    this pools many trials to get a much better estimate of how much of the
+    calibrated span (used to derive MyoArm's L0) is actually ever used.
+
+    Parameters
+    ----------
+    hdf5_path : str
+        Path to an hdf5 file containing a (n_trials, 4, T) joint angle
+        dataset (degrees), e.g. pcr_dataset_train_mujoco.hdf5 or
+        flag3d_raw_train.hdf5.
+    joint_coords_key : str
+        Dataset key holding the (n_trials, 4, T) joint trajectories.
+    n_trials : int or None
+        Number of trials to randomly sample (without replacement) from the
+        file. Use None to run all trials (slow for large datasets -- mind
+        the runtime, this re-simulates every timepoint of every trial).
+    myomodel, myodata : mujoco model/data, optional
+        Reuse an already-loaded 'bimanual' model/data pair.
+    seed : int
+        RNG seed for the trial subsample, for reproducibility.
+    label : str, optional
+        Name used in the printed header (defaults to the file's basename).
+
+    Returns
+    -------
+    dict with keys:
+        muscle_order, n_trials_used,
+        observed_min_mm, observed_max_mm, observed_span_mm : (25,)
+        calibrated_span_mm, optimal_lengths_mm, static_tendon_lengths_mm : (25,)
+    """
+    if myomodel is None or myodata is None:
+        myomodel, myodata = mm.load('bimanual')
+
+    muscle_order = list(MUSCLE_NAMES)
+    n_muscles = len(muscle_order)
+    optimal_lengths_mm, static_tendon_lengths_mm, calibrated_span_mm = _get_myoarm_calibration(myomodel, muscle_order)
+
+    coord_dst = np.array([10, 11, 13, 14])
+    coord_src = np.array([0, 1, 2, 3])
+
+    observed_min_mm = np.full(n_muscles, np.inf)
+    observed_max_mm = np.full(n_muscles, -np.inf)
+
+    with h5py.File(hdf5_path, 'r') as f:
+        total_trials = f[joint_coords_key].shape[0]
+        if n_trials is not None and n_trials < total_trials:
+            rng = np.random.default_rng(seed)
+            trial_indices = np.sort(rng.choice(total_trials, size=n_trials, replace=False))
+        else:
+            trial_indices = np.arange(total_trials)
+
+        report_every = max(1, len(trial_indices) // 5)
+        for count, trial_idx in enumerate(trial_indices):
+            joint_rad = np.deg2rad(f[joint_coords_key][trial_idx])  # (4, T)
+            n_timepoints = joint_rad.shape[1]
+            for t in range(n_timepoints):
+                myodata.qpos[coord_dst] = joint_rad[coord_src, t]
+                mj.mj_forward(myomodel, myodata)
+                for idx, muscle in enumerate(muscle_order):
+                    length_mm = myodata.actuator_length[MUSCLE_ACTUATOR_MAP[muscle]] * 1000
+                    if length_mm < observed_min_mm[idx]:
+                        observed_min_mm[idx] = length_mm
+                    if length_mm > observed_max_mm[idx]:
+                        observed_max_mm[idx] = length_mm
+            if (count + 1) % report_every == 0:
+                print(f"  ...{count + 1}/{len(trial_indices)} trials processed")
+
+    observed_span_mm = observed_max_mm - observed_min_mm
+    label = label or os.path.basename(hdf5_path)
+
+    print(f"\n{label} -- aggregated over {len(trial_indices)} trials")
+    header = f"{'muscle':10s} {'obs_min':>8s} {'obs_max':>8s} {'obs_span':>9s} {'calib_span':>11s} {'%_of_calib':>11s} {'L0_mujoco':>10s} {'tendon_mm':>10s}"
+    print(header)
+    for idx, muscle in enumerate(muscle_order):
+        pct = 100 * observed_span_mm[idx] / calibrated_span_mm[idx] if calibrated_span_mm[idx] > 0 else float("nan")
+        flag = "  <- negative tendon!" if static_tendon_lengths_mm[idx] < 0 else ""
+        print(
+            f"{muscle:10s} {observed_min_mm[idx]:8.1f} {observed_max_mm[idx]:8.1f} "
+            f"{observed_span_mm[idx]:9.1f} {calibrated_span_mm[idx]:11.1f} {pct:10.1f}% "
+            f"{optimal_lengths_mm[idx]:10.1f} {static_tendon_lengths_mm[idx]:10.1f}{flag}"
+        )
+
+    return {
+        "muscle_order": muscle_order,
+        "n_trials_used": len(trial_indices),
+        "observed_min_mm": observed_min_mm,
+        "observed_max_mm": observed_max_mm,
+        "observed_span_mm": observed_span_mm,
+        "calibrated_span_mm": calibrated_span_mm,
+        "optimal_lengths_mm": optimal_lengths_mm,
+        "static_tendon_lengths_mm": static_tendon_lengths_mm,
+    }
 
 
 path_1 = "/media1/siebe/datasets/flag3d_keypoint.pkl"

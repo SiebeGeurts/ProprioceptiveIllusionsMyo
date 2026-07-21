@@ -7,8 +7,9 @@ import argparse
 import h5py
 import numpy as np
 from scipy.interpolate import interp1d
+from joblib import Parallel, delayed
 
-def upsample_hdf5(original_file_path, new_file_path, original_rate, new_rate):
+def upsample_hdf5(original_file_path, new_file_path, original_rate, new_rate, n_jobs=-1):
     """
     Takes a hdf5 file with multiple datasets objects and upsamples them.
 
@@ -17,6 +18,7 @@ def upsample_hdf5(original_file_path, new_file_path, original_rate, new_rate):
         new_file_path (str): path to save the upsampled data
         original_rate (float): sampling rate of the original data
         new_rate (float): target sample rate
+        n_jobs (int): number of parallel workers (joblib convention: -1 = all cores)
 
     Returns:
     """
@@ -46,23 +48,58 @@ def upsample_hdf5(original_file_path, new_file_path, original_rate, new_rate):
                     "spindle_FR",
                     "spindle_info",
                 ]:
-                    upsample_data(new_file, dataset_name, data, original_rate, new_rate)
+                    upsample_data(new_file, dataset_name, data, original_rate, new_rate, n_jobs=n_jobs)
 
                 # datasets that shouldn't be upsampled
                 else:
                     original_file.copy(dataset_name, new_file, name=dataset_name)
 
 
-def upsample_data(file, name, data, original_rate, new_rate, batch_size=10000):
+def _interpolate_sample(sample, t_original, t_new, is_multifeature):
+    """
+    Linearly interpolates a single sample's rows (and features, if present)
+    from t_original onto t_new. Independent of every other sample, so callers
+    can run this across a batch in parallel.
+
+    Arguments:
+        sample: np.array, shape=(rows, time) or (rows, time, features)
+
+    Returns:
+        interpolated sample, shape=(rows, len(t_new)) or (rows, len(t_new), features)
+    """
+    if is_multifeature:
+        num_rows, _, num_features = sample.shape
+        out = np.empty((num_rows, len(t_new), num_features), dtype=sample.dtype)
+        for j in range(num_rows):
+            for k in range(num_features):
+                f_interp = interp1d(
+                    t_original, sample[j, :, k], kind="linear", fill_value="extrapolate"
+                )
+                out[j, :, k] = f_interp(t_new)
+    else:
+        num_rows = sample.shape[0]
+        out = np.empty((num_rows, len(t_new)), dtype=sample.dtype)
+        for j in range(num_rows):
+            f_interp = interp1d(
+                t_original, sample[j, :], kind="linear", fill_value="extrapolate"
+            )
+            out[j, :] = f_interp(t_new)
+    return out
+
+
+def upsample_data(file, name, data, original_rate, new_rate, batch_size=10000, n_jobs=-1):
     """
     Upsamples a dataset object with time along the last or second-to-last axis,
-    depending on its shape, and processes the data in batches.
+    depending on its shape, and processes the data in batches. Within each
+    batch, samples are independent of one another, so they're interpolated in
+    parallel across n_jobs workers.
 
     Arguments:
         data: dataset object of shape (N, ..., time) or (N, ..., time, features)
         original_rate (float): sampling rate of the original data
         new_rate (float): target sample rate
         batch_size (int): number of samples to process per batch
+        n_jobs (int): number of parallel workers (joblib convention: -1 = all cores)
 
     Returns:
         upsampled_data: upsampled dataset object
@@ -93,43 +130,13 @@ def upsample_data(file, name, data, original_rate, new_rate, batch_size=10000):
         print(f"Processing batch {start_idx}-{start_idx + batch_size}...")
         end_idx = min(start_idx + batch_size, num_samples)
         data_batch = data[start_idx:end_idx, ...]  # Current batch
-        # upsampled_batch = np.empty((end_idx - start_idx,)+upsampled_shape[1:], dtype=data.dtype)
 
-        # Initialize batch array
-        if is_multifeature:
-            # For shape (batch_size, ###, time, features)
-            data_batch_interp = np.empty(
-                data_batch.shape[:-2] + (num_timepoints_new, data_batch.shape[-1]),
-                dtype=data.dtype,
-            )
-            for i in range(data_batch.shape[0]):  # Iterate over samples
-                for j in range(
-                    data_batch.shape[1]
-                ):  # Iterate over the second dimension (e.g., muscles)
-                    for k in range(data_batch.shape[-1]):  # Iterate over features
-                        f_interp = interp1d(
-                            t_original,
-                            data_batch[i, j, :, k],
-                            kind="linear",
-                            fill_value="extrapolate",
-                        )
-                        data_batch_interp[i, j, :, k] = f_interp(t_new)
-        else:
-            # For shape (batch_size, ###, time)
-            data_batch_interp = np.empty(
-                data_batch.shape[:-1] + (num_timepoints_new,), dtype=data.dtype
-            )
-            for i in range(data_batch.shape[0]):  # Iterate over samples
-                for j in range(
-                    data_batch.shape[1]
-                ):  # Iterate over the second dimension (e.g., muscles)
-                    f_interp = interp1d(
-                        t_original,
-                        data_batch[i, j, :],
-                        kind="linear",
-                        fill_value="extrapolate",
-                    )
-                    data_batch_interp[i, j, :] = f_interp(t_new)
+        # Interpolate each sample in the batch in parallel (samples are independent)
+        interpolated_samples = Parallel(n_jobs=n_jobs)(
+            delayed(_interpolate_sample)(data_batch[i], t_original, t_new, is_multifeature)
+            for i in range(data_batch.shape[0])
+        )
+        data_batch_interp = np.stack(interpolated_samples, axis=0)
 
         # Assign interpolated batch to the output
         upsampled_data[start_idx:end_idx, ...] = data_batch_interp
@@ -165,6 +172,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_file", type=str)
     parser.add_argument("--original_rate", type=float, default=60)
     parser.add_argument("--new_rate", type=float, default=240)
+    parser.add_argument("--n_jobs", type=int, default=-1, help="Number of parallel workers (joblib convention: -1 = all cores)")
     params = parser.parse_args()
 
     output_dir = os.path.dirname(params.output_file)
@@ -173,7 +181,7 @@ if __name__ == "__main__":
 
     print("Upsampling...")
 
-    upsample_hdf5(params.input_file, params.output_file, params.original_rate, params.new_rate)
+    upsample_hdf5(params.input_file, params.output_file, params.original_rate, params.new_rate, n_jobs=params.n_jobs)
 
     print("Upsampling completed")
     print()

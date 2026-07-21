@@ -11,10 +11,18 @@ import sys
 
 # with h5py.File(os.path.join(SAVE_DIR, "data/cleaned_smooth/flag_pcr_train.hdf5"), 'r') as f:
 
+
+# the parameter-fitting loops below only ever use this many samples (all of
+# normalized_muscle_{lengths,velocities,accelerations}), so only that many
+# are read here -- loading the full dataset (and then normalizing all of it)
+# needs tens of GB more than is ever actually used, which is what was
+# crashing this script on the large dataset
+NUM_FITTING_SAMPLES = 2000
+
 with h5py.File(os.path.join(SAVE_DIR, "flag_pcr_train.hdf5"), 'r') as f:
-    muscle_lengths = f['muscle_lengths'][()]
-    muscle_velocities = f['muscle_velocities'][()]
-    muscle_accelerations = f['muscle_accelerations'][()]
+    muscle_lengths = f['muscle_lengths'][:NUM_FITTING_SAMPLES]
+    muscle_velocities = f['muscle_velocities'][:NUM_FITTING_SAMPLES]
+    muscle_accelerations = f['muscle_accelerations'][:NUM_FITTING_SAMPLES]
 
 MUSCLE_SCALE = 1000
 
@@ -58,9 +66,9 @@ def get_optimal_fiber_length():
     return optimal_length
 
 optimal_length = get_optimal_fiber_length()
-np.save('/media1/siebe/ProprioceptiveIllusionsMyo/optimal_lengths.npy',optimal_length)
+np.save('/media/data16/siebe/ProprioceptiveIllusionsMyo/optimal_lengths.npy',optimal_length)
 print("saved optimal lengths!")
-sys.exit()
+
 normalized_muscle_lengths = np.zeros_like(muscle_lengths)
 normalized_muscle_velocities = np.zeros_like(muscle_velocities)
 normalized_muscle_accelerations = np.zeros_like(muscle_accelerations)
@@ -93,7 +101,7 @@ from scipy.optimize import differential_evolution
 
 spindle_i_a_range = (50, 180)
 spindle_ii_range = (20, 50)
-constant_e_v = 0.6 # 1
+constant_e_v = 1 # 1
 
 lambda_reg = 1000
 
@@ -101,9 +109,9 @@ parameters_per_muscle = {}
 
 for m in range(25):
 
-    lengths = normalized_muscle_lengths[:2000, m, :]
-    velocities = normalized_muscle_velocities[:2000, m, :]
-    accelerations = normalized_muscle_accelerations[:2000, m, :]
+    lengths = normalized_muscle_lengths[:, m, :]
+    velocities = normalized_muscle_velocities[:, m, :]
+    accelerations = normalized_muscle_accelerations[:, m, :]
 
     k_l_list = []
     k_v_list = []
@@ -113,7 +121,7 @@ for m in range(25):
     frac_zero_list = []
     max_rate_list = []
 
-    for i in range(10):
+    for i in range(30):
         print(f'Optimizing muscle {m}, iteration {i}')
 
         target_zero = np.random.uniform(0.00, 0.3)
@@ -186,9 +194,9 @@ with open(os.path.join(SAVE_DIR, "coefficients_i_a.csv"), 'w') as f:
         
 for m in range(25):
 
-    lengths = normalized_muscle_lengths[:2000, m, :]
-    velocities = normalized_muscle_velocities[:2000, m, :]
-    accelerations = normalized_muscle_accelerations[:2000, m, :]
+    lengths = normalized_muscle_lengths[:, m, :]
+    velocities = normalized_muscle_velocities[:, m, :]
+    accelerations = normalized_muscle_accelerations[:, m, :]
 
     k_l_list = []
     k_v_list = []

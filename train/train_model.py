@@ -4,7 +4,7 @@ This file is used to train and save the models
 
 import argparse
 import sys
-sys.path.append('/media1/siebe/ProprioceptiveIllusionsMyo')
+sys.path.append('/media/data16/siebe/ProprioceptiveIllusionsMyo')
 
 from directory_paths import MODELS_DIR, SAVE_DIR
 from model.model_definitions import SpatiotemporalNetwork, SpatiotemporalNetworkCausal

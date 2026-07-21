@@ -1474,6 +1474,25 @@ def convert_to_muscle_lengths_myo(joint_trajectory,myomodel,myodata):
     # for i in list(muscle_config.keys()):
     #     muscle_config[i] = savgol_filter(median_filter(muscle_config[i], 7), 5, 2)
 
+    # Guard against rare MuJoCo tendon-wrapping singularities: certain joint
+    # configurations make mj_forward return a NaN actuator_length for a
+    # muscle at an isolated timepoint. Interpolate over any such gaps using
+    # that muscle's own neighboring timepoints, so a single bad frame here
+    # doesn't get amplified by the downstream upsampling/smoothing into many
+    # NaN frames in the training data.
+    for muscle in muscle_order:
+        trace = muscle_config[muscle]
+        nan_mask = np.isnan(trace)
+        if nan_mask.any():
+            valid_mask = ~nan_mask
+            if not valid_mask.any():
+                raise ValueError(
+                    f"All timepoints are NaN for muscle {muscle}; cannot interpolate."
+                )
+            trace[nan_mask] = np.interp(
+                np.flatnonzero(nan_mask), np.flatnonzero(valid_mask), trace[valid_mask]
+            )
+
     # convert to a numpy array
     muscle_length_configurations = make_muscle_matrix(muscle_config)
     # muscle_length_configurations_delete_later = make_muscle_matrix(muscle_config_delete_later)
@@ -1728,3 +1747,8 @@ def remove_arm(keep="right", xml_path=None):
         if p.geomname1 not in geoms or p.geomname2 not in geoms:
             spec.delete(p)
     return spec.compile()
+
+
+
+
+

@@ -50,8 +50,8 @@ CONFIG_FIG3="extract_data/configs/train_test_data_spindles.yaml"
 run_generation "$CONFIG_FIG3" "${SEEDS_FIG3[@]}" -- "${INPUTS_FILES[@]}"
 
 ### --- Data for rest of models --- ###
-# SEEDS_EXTENDED=(0 1 2 3 4)
-SEEDS_EXTENDED=(0 1)
+SEEDS_EXTENDED=(0 1 2 3 4)
+# SEEDS_EXTENDED=(0 1)
 CONFIG_EXTENDED="extract_data/configs/train_test_data_spindles_extended.yaml"
 
 run_generation "$CONFIG_EXTENDED" "${SEEDS_EXTENDED[@]}" -- "${INPUTS_FILES[@]}"
