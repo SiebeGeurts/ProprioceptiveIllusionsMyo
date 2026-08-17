@@ -282,6 +282,29 @@ class Dataset:
         else:
             return (mybatch_data, mybatch_labels)
 
+    @property
+    def train_size(self):
+        return self.train_data.shape[0]
+
+    @property
+    def val_size(self):
+        return self.val_data.shape[0]
+
+    def compute_train_stats(self):
+        """Mean/std of train_data (dims 0,3) and train_labels (dims 0,1).
+
+        Kept in-memory here since `Dataset`/`SpindleDataset` already hold the
+        whole training split in RAM; `ChunkedSpindleDataset` (train/chunked_dataset.py)
+        overrides this with a streaming version for datasets too big to load
+        in one go, but `Trainer.train()` below calls this method uniformly
+        either way.
+        """
+        data_mean = self.train_data.mean(dim=[0, 3], keepdim=True)
+        data_std = self.train_data.std(dim=[0, 3], keepdim=True)
+        label_mean = self.train_labels.mean(dim=[0, 1], keepdim=True)
+        label_std = self.train_labels.std(dim=[0, 1], keepdim=True)
+        return data_mean, data_std, label_mean, label_std
+
     def resize(self, batch_x, batch_y):
         if self.new_size is not None:
             true_timestamps = np.arange(batch_x.shape[-1])
@@ -409,9 +432,9 @@ class Trainer:
 
         """
         # for early stopping
-        if batch_size > self.dataset.train_data.shape[0]:
-            batch_size = self.dataset.val_data.shape[0]
-        steps_per_epoch = self.dataset.train_data.shape[0] // batch_size
+        if batch_size > self.dataset.train_size:
+            batch_size = self.dataset.val_size
+        steps_per_epoch = self.dataset.train_size // batch_size
         max_iter = num_epochs * steps_per_epoch
         self.batch_size = batch_size
         if val_steps > early_stopping_epochs * steps_per_epoch:
@@ -419,16 +442,15 @@ class Trainer:
         early_stopping_steps = early_stopping_epochs * steps_per_epoch // val_steps
 
         if normalize:
-            # breakpoint()
             # normalize by channel. values are tensors of shape (Batch, Channel, Muscles, Time) not yet in device
-            self.train_data_mean = self.dataset.train_data.mean(
-                dim=[0, 3], keepdim=True
-            )
-            # self.train_data_std = torch.abs(self.dataset.train_data).max(dim=0, keepdim=True).values.max(dim=3, keepdim=True).values
-            self.train_data_std = self.dataset.train_data.std(dim=[0, 3], keepdim=True)
-            self.label_mean = self.dataset.train_labels.mean(dim=[0, 1], keepdim=True)
-            # self.label_max = torch.abs(self.dataset.train_labels).max(dim=0,keepdim=True).values.max(dim=1,keepdim=True).values
-            self.label_max = self.dataset.train_labels.std(dim=[0, 1], keepdim=True)
+            # delegated to the dataset so a chunked dataset can stream these
+            # stats instead of needing the whole training split in memory
+            (
+                self.train_data_mean,
+                self.train_data_std,
+                self.label_mean,
+                self.label_max,
+            ) = self.dataset.compute_train_stats()
             # save params as dict with lists for the config
             train_params = {
                 "train_mean": self.train_data_mean.cpu().numpy().tolist(),
@@ -653,7 +675,7 @@ class Trainer:
 
         """
         # how many to go through dataset once
-        num_iter = self.dataset.val_data.shape[0] // self.batch_size
+        num_iter = self.dataset.val_size // self.batch_size
         # num_iter = (self.dataset.val_end_idx - self.dataset.train_end_idx) // self.batch_size
 
         # store info

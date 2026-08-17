@@ -3,11 +3,13 @@ This file is used to train and save the models
 """
 
 import argparse
+import gc
 import sys
 sys.path.append('/media/data16/siebe/ProprioceptiveIllusionsMyo')
 
 from directory_paths import MODELS_DIR, SAVE_DIR
 from model.model_definitions import SpatiotemporalNetwork, SpatiotemporalNetworkCausal
+from train.chunked_dataset import ChunkedSpindleDataset
 from train.new_spindle_dataset import SpindleDataset
 from train.train_model_utils import *
 
@@ -33,7 +35,7 @@ DEFAULT_INPUT_SHAPE = [10, NUM_MUSCLES, TIME]  # num_input_channels x muscles x 
 DEFAULT_P_DROP = 0.7  # for letter recognition
 DEFAULT_SEED = 0
 
-DEFAULT_NUM_EPOCHS = 100 #1000
+DEFAULT_NUM_EPOCHS = 1000
 DEFAULT_BATCH_SIZE = 128  # 256
 DEFAULT_EARLY_STOP_MIN_EPOCH = 40
 DEFAULT_EARLY_STOPPING_EPOCHS = 5
@@ -45,10 +47,52 @@ CAUSAL = True  # use causal output layer
 DEFAULT_SEEDS = [0]
 DEFAULT_N_AFF = 5
 
+# chunked loading: bounds how much of PATH_TO_DATA is resident in memory at
+# once instead of loading the whole (multi-GB, growing) file up front. See
+# train/chunked_dataset.py for what each knob controls.
+DEFAULT_CHUNK_SIZE = None  # None = use the HDF5 file's own on-disk chunk size
+DEFAULT_BUFFER_CHUNKS = 4
+DEFAULT_VAL_FRACTION = 0.1
+DEFAULT_MAX_VAL_SAMPLES = 5000
+
 # ------------------------------------------------------------------------------------------------------
 
 
-def train_with_config(config):
+def load_dataset(config):
+    """Load the SpindleDataset/Dataset for config['PATH_TO_DATA'].
+
+    Loading is independent of `training_seed` (only the model init and the
+    per-epoch shuffle depend on it), so callers should build this once per
+    `seed` and reuse it across every training_seed for that seed instead of
+    re-reading the multi-GB file from disk each time.
+    """
+    if config.get("spindle_dataset", True):  # spindle dataset
+        return ChunkedSpindleDataset(
+            config["PATH_TO_DATA"],
+            dataset_type="train",
+            key=config["KEY"],
+            task=config["TASK"],
+            new_size=TIME,
+            start_end_idx=config["START_END_IDX"],
+            chunk_size=config.get("CHUNK_SIZE", DEFAULT_CHUNK_SIZE),
+            buffer_chunks=config.get("BUFFER_CHUNKS", DEFAULT_BUFFER_CHUNKS),
+            val_fraction=config.get("VAL_FRACTION", DEFAULT_VAL_FRACTION),
+            max_val_samples=config.get("MAX_VAL_SAMPLES", DEFAULT_MAX_VAL_SAMPLES),
+            seed=config.get("seed", DEFAULT_SEED),
+        )
+    else:  # for non spindle inputs
+        return Dataset(
+            config["PATH_TO_DATA"],
+            dataset_type="train",
+            key=config["KEY"],
+            task=config["TASK"],
+            aclass=None,
+            new_size=TIME,
+            fraction=FRACTION,
+        )
+
+
+def train_with_config(config, train_data):
     input_shape = config.get("input_shape", DEFAULT_INPUT_SHAPE)
     if config["KEY"] == "spindle_info":
         input_shape = [2, NUM_MUSCLES, TIME]
@@ -108,29 +152,6 @@ def train_with_config(config):
     )
 
     print("main -> models created")
-
-    # load the training data - check wether to use dataset or Spindledataset
-    if config.get("spindle_dataset", True):  # spindle dataset
-        train_data = SpindleDataset(
-            config["PATH_TO_DATA"],
-            dataset_type="train",
-            key=config["KEY"],
-            task=config["TASK"],
-            aclass=None,
-            new_size=TIME,
-            start_end_idx=config["START_END_IDX"],
-        )
-    else:  # for non spindle inputs
-        train_data = Dataset(
-            config["PATH_TO_DATA"],
-            dataset_type="train",
-            key=config["KEY"],
-            task=config["TASK"],
-            aclass=None,
-            new_size=TIME,
-            fraction=FRACTION,
-        )
-    print("Data loaded.")
 
     # Create trainer
     device = torch.device(
@@ -202,31 +223,50 @@ if __name__ == "__main__":
     print(f"Running trainings for {len(seeds)} seeds and {n_aff} afferents.")
 
     for seed in seeds:
+        # PATH_TO_DATA and everything derived from it depend only on `seed`
+        # (not `training_seed`), so build this config and load the dataset
+        # once per seed and reuse it for every training_seed below -- avoids
+        # re-reading the same multi-GB file from disk once per training_seed.
+        seed_config = copy.deepcopy(
+            base_config
+        )  # important to copy so you don't modify the original
+
+        seed_config["seed"] = seed
+        if seed_config.get("PATH_TO_DATA") is None:
+            data_path_prefix = seed_config.get(
+                "DATA_PATH_PREFIX", "optimized_linear_extended"
+            )
+            seed_config["PATH_TO_DATA"] = (
+                f"{data_dir}/{data_path_prefix}_{seed}_{n_aff}_{n_aff}_flag_pcr_train.hdf5"
+            )
+            seed_config["BASE_DIR"] = base_dir
+            if seed_config.get("EXPERIMENT_ID") is None:
+                seed_config["EXPERIMENT_ID"] = (
+                    f"causal_flag-pcr_{data_path_prefix}_{n_aff}_{n_aff}_"
+                )
+        seed_config["input_shape"] = [
+            n_aff + n_aff,
+            NUM_MUSCLES,
+            TIME,
+        ]  # adjust if needed
+
+        print(f"Loading dataset for seed {seed} from {seed_config['PATH_TO_DATA']}")
+        train_data = load_dataset(seed_config)
+
         for training_seed in training_seeds:
             config = copy.deepcopy(
-                base_config
+                seed_config
             )  # important to copy so you don't modify the original
-
-            # Modify fields that depend on seed, training_seed, n_aff
-            config["seed"] = seed
             config["training_seed"] = training_seed
-            if config.get("PATH_TO_DATA") is None:
-                data_path_prefix = config.get(
-                    "DATA_PATH_PREFIX", "optimized_linear_extended"
-                )
-                config["PATH_TO_DATA"] = (
-                    f"{data_dir}/{data_path_prefix}_{seed}_{n_aff}_{n_aff}_flag_pcr_train.hdf5"
-                )
-                config["BASE_DIR"] = base_dir
-                if config.get("EXPERIMENT_ID") is None:
-                    config["EXPERIMENT_ID"] = (
-                        f"causal_flag-pcr_{data_path_prefix}_{n_aff}_{n_aff}_"
-                    )
-            config["input_shape"] = [
-                n_aff + n_aff,
-                NUM_MUSCLES,
-                TIME,
-            ]  # adjust if needed
 
             # Call training function
-            train_with_config(config)
+            train_with_config(config, train_data)
+
+        # Done with this seed's dataset. With ChunkedSpindleDataset only a
+        # bounded shuffle buffer + capped val set are resident (not the whole
+        # file), but still release the open HDF5 handle and buffer explicitly
+        # before the next seed starts its own, so the two don't briefly
+        # coexist.
+        train_data.close()
+        del train_data
+        gc.collect()
