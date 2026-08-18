@@ -2,10 +2,12 @@
 # ============================================================================
 # SPINDLE-COUNT SCALING EXPERIMENT -- GPU on-the-fly firing rates
 #
-# Trains 15 models -- n_aff = 10, 20, ..., 150 (i.e. 10..150 Ia AND 10..150
-# II afferents per muscle, so 20..300 input channels) -- all on ONE
-# coefficient seed and ONE training seed, so the only thing that varies
-# between the 15 models is how many spindles they see.
+# Trains models for n_aff = 15, 30, ..., 150 (Ia AND II afferents per
+# muscle, so 30..300 input channels) x each (coeff_seed, training_seed) pair
+# in SEED_PAIRS below -- so within one pair, the only thing that varies is
+# how many spindles the model sees. SEED_PAIRS currently pairs each
+# coefficient seed with itself as the training seed, but the two can be set
+# independently per entry (e.g. "0:1") if you want to vary them separately.
 #
 # Unlike spindle_scaling_experiment.sh, this script never writes a
 # precomputed per-n_aff spindle_FR HDF5 file. Spindle firing rates are
@@ -38,9 +40,9 @@
 # ----------------------------------------------------------------------------
 # RESUMABILITY
 # ----------------------------------------------------------------------------
-# Training per level is skipped if its `.done_naff{k}` marker already exists
-# (touched after that level finishes). Safe to re-run this script after an
-# interruption -- it picks up where it left off.
+# Training per (seed, level) is skipped if its `.done_naff{k}_seed{s}` marker
+# already exists (touched after that (seed, level) finishes). Safe to re-run
+# this script after an interruption -- it picks up where it left off.
 #
 # This script is NOT executed automatically -- run it yourself when ready.
 # ============================================================================
@@ -58,10 +60,9 @@ DATA_DIR="/media/data16/siebe/datasets"
 EXPERIMENT_DIR="${DATA_DIR}/spindle_scaling_experiment_gpu"
 mkdir -p "$EXPERIMENT_DIR"
 
-COEFF_SEED=0          # single coefficient seed shared by every n_aff level
-TRAINING_SEED=0       # single training seed shared by every n_aff level
+SEED_PAIRS=("0:0" "2:2" "4:4")     # "coeff_seed:training_seed" -- entries need not match (e.g. "0:1")
 N_AFF_MAX=150
-N_AFF_LEVELS=(10 20 30 40 50 60 70 80 90 100 110 120 130 140 150)
+N_AFF_LEVELS=(15 30 45 60 75 90 105 120 135 150)
 
 RAW_DATA_PATH="${DATA_DIR}/flag_pcr_os_train.hdf5"
 IA_COEFF_PATH="${DATA_DIR}/coefficients_i_a.csv"   # per-muscle coefficient pools (both must have
@@ -92,7 +93,7 @@ MAX_VAL_SAMPLES=5000
 DATA_PATH_PREFIX="spindle_scaling_gpu"
 export MODELS_DIR="trained_models_spindle_scaling"
 
-echo "=== Spindle-count scaling experiment (GPU firing rates): n_aff in ${N_AFF_LEVELS[*]} ==="
+echo "=== Spindle-count scaling experiment (GPU firing rates): n_aff in ${N_AFF_LEVELS[*]}, (coeff_seed:training_seed) pairs ${SEED_PAIRS[*]} ==="
 echo "REPO_ROOT=$REPO_ROOT"
 echo "EXPERIMENT_DIR=$EXPERIMENT_DIR"
 echo "MODELS_DIR=$MODELS_DIR"
@@ -100,6 +101,14 @@ ls -lh "$RAW_DATA_PATH"
 nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free --format=csv || true
 
 # ----------------------------------------------------------------------------
+for PAIR in "${SEED_PAIRS[@]}"; do
+    COEFF_SEED="${PAIR%%:*}"
+    TRAINING_SEED="${PAIR##*:}"
+    echo ""
+    echo "############################################################################"
+    echo "### coeff_seed=${COEFF_SEED} training_seed=${TRAINING_SEED}"
+    echo "############################################################################"
+
 echo ""
 echo "=== [1/2] Building master coefficient index lists (nested, seed=${COEFF_SEED}) ==="
 python3 - <<PYEOF
@@ -138,11 +147,11 @@ PYEOF
 
 # ----------------------------------------------------------------------------
 echo ""
-echo "=== [2/2] Training n_aff=10..${N_AFF_MAX} (seed=${COEFF_SEED}, training_seed=${TRAINING_SEED}) ==="
+echo "=== [2/2] Training n_aff in ${N_AFF_LEVELS[*]} (seed=${COEFF_SEED}, training_seed=${TRAINING_SEED}) ==="
 for K in "${N_AFF_LEVELS[@]}"; do
-    DONE_MARKER="${EXPERIMENT_DIR}/.done_naff${K}"
+    DONE_MARKER="${EXPERIMENT_DIR}/.done_naff${K}_coeffseed${COEFF_SEED}_trainseed${TRAINING_SEED}"
     if [[ -f "$DONE_MARKER" ]]; then
-        echo "--- n_aff=${K}: already trained, skipping (remove $DONE_MARKER to redo) ---"
+        echo "--- coeff_seed=${COEFF_SEED} training_seed=${TRAINING_SEED}, n_aff=${K}: already trained, skipping (remove $DONE_MARKER to redo) ---"
         continue
     fi
 
@@ -215,9 +224,12 @@ EOF
     LEVEL_ELAPSED=$((SECONDS - LEVEL_START))
 
     touch "$DONE_MARKER"
-    echo "--- n_aff=${K}: done. This model took $(format_duration $LEVEL_ELAPSED). Total script running time: $(format_duration $SECONDS) ---"
+    echo "--- coeff_seed=${COEFF_SEED} training_seed=${TRAINING_SEED}, n_aff=${K}: done. This model took $(format_duration $LEVEL_ELAPSED). Total script running time: $(format_duration $SECONDS) ---"
+done
+
+    echo "--- coeff_seed=${COEFF_SEED} training_seed=${TRAINING_SEED}: all n_aff levels done. Total script running time: $(format_duration $SECONDS) ---"
 done
 
 echo ""
-echo "=== Spindle-count scaling experiment (GPU) complete. Total running time: $(format_duration $SECONDS) ==="
+echo "=== Spindle-count scaling experiment (GPU) complete for pairs ${SEED_PAIRS[*]}. Total running time: $(format_duration $SECONDS) ==="
 echo "=== Models under: ${DATA_DIR}/${MODELS_DIR} ==="
