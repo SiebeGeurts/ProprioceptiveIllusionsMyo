@@ -3,7 +3,8 @@ import os
 
 import torch
 import yaml
-
+import sys
+sys.path.append("/media/data16/siebe/ProprioceptiveIllusionsMyo/")
 from directory_paths import MODELS_DIR, SAVE_DIR
 from inference.test_model_utils_new import (
     evaluate_model_with_vibrations,
@@ -22,7 +23,7 @@ KEY = "spindle_info"
 
 MODEL_PATH = os.path.join(
     SAVE_DIR,
-    "trained_models/experiment_causal_flag-pcr_optimizedLinearFR_30k_noLayerNorm_elbowAngles_stride1_240Hz_letter_reconstruction_joints/spatiotemporal_4_8-8-32-64_7171_0",
+    f"{MODELS_DIR}/experiment_causal_flag-pcr_optimizedLinearFR_30k_noLayerNorm_elbowAngles_stride1_240Hz_letter_reconstruction_joints/spatiotemporal_4_8-8-32-64_7171_0",
 )
 INPUT_DATA = "ELBOW"
 SAMPLE_RATE = "240Hz"
@@ -165,6 +166,12 @@ def parse_args():
         default=False,
         help="Save plots.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Recompute even if vib_results.h5 already exists at save_path.",
+    )
     return parser.parse_args()
 
 
@@ -230,10 +237,19 @@ def main():
     os.makedirs(save_path, exist_ok=True)
 
     vib_results_path = os.path.join(save_path, f"vib_results.h5")
-    # do not run if vib_results.h5 already exists
+    # do not run if vib_results.h5 already exists, unless --force was passed
     if os.path.exists(vib_results_path):
-        print(f"vib_results.h5 already exists at {vib_results_path}")
-        return
+        if not args.force:
+            print(f"vib_results.h5 already exists at {vib_results_path}")
+            return
+        # accuracy_vib.txt is opened in append mode downstream, so a forced
+        # recompute needs the stale file removed first or results from this
+        # run would just pile up after the old ones instead of replacing them
+        print(f"--force: removing stale results at {save_path} before recomputing")
+        accuracy_vib_path = os.path.join(save_path, "accuracy_vib.txt")
+        if os.path.exists(accuracy_vib_path):
+            os.remove(accuracy_vib_path)
+        os.remove(vib_results_path)
 
     print("Model path: ", args.model_path)
     train_seed = int(args.model_path[-1])
@@ -264,8 +280,8 @@ def main():
     )
 
     # Load model
-    # base_path is the part of args.model_path before /trained_models
-    base_path = args.model_path.split("/trained_models")[0]
+    # base_path is the part of args.model_path before /{MODELS_DIR}
+    base_path = args.model_path.split(f"/{MODELS_DIR}")[0]
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     tester = load_model(
         config,
@@ -309,7 +325,7 @@ def main():
             channel_indices,
             save_path=save_path,
         )
-    plot_vibration_analysis(df, args.save_path)
+    plot_vibration_analysis(df, args.save_path, vib_type=vib_type)
 
     # plot_samples_from_results(df, args.save_path)
 

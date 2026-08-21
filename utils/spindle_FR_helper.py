@@ -1049,7 +1049,7 @@ def plot_vibration_metrics(
         plt.close()
 
 
-def plot_vibration_analysis(df, save_path, swap_elbow_angle=False):
+def plot_vibration_analysis(df, save_path, swap_elbow_angle=False, vib_type=None):
     """
     Plot 'offset_n_v_vib' and 'vib_angle_diff' vs. vibration frequency,
     colored by elbow angle ranges.
@@ -1057,6 +1057,10 @@ def plot_vibration_analysis(df, save_path, swap_elbow_angle=False):
     Args:
         df (pd.DataFrame): DataFrame containing trial results.
         save_path (str): Directory to save the generated plot.
+        vib_type (str, optional): Muscle group being vibrated (e.g. "triceps",
+            "TRIlat", "biceps"). Selects the colormap the same way
+            plot_angleOffset_vs_vibration_elbowRange does: blue-green (GnBu)
+            for triceps, orange-red (OrRd) otherwise.
     """
     # Define elbow angle ranges
     import pandas as pd
@@ -1080,9 +1084,18 @@ def plot_vibration_analysis(df, save_path, swap_elbow_angle=False):
         print("vib_angle_diff or vib_angle_diff_elbow not found in df")
 
     # Map ranges to colors
-    range_colors = cm.cool(np.linspace(0, 1, len(range_labels)))
+    if vib_type is not None and "tri" in vib_type.lower():
+        range_colors = cm.GnBu(np.linspace(0, 1, len(range_labels)))
+    else:
+        range_colors = cm.OrRd(np.linspace(0, 1, len(range_labels)))
     range_color_map = dict(zip(range_labels, range_colors))
     vib_freq_name = "vib_freq_str" if type(df["vib_freq"][0]) == list else "vib_freq"
+
+    # Jitter the x-values so overlapping points at the same frequency are visible
+    jitter_strength = 3
+    df["jittered_vib_freq"] = df[vib_freq_name] + np.random.uniform(
+        -jitter_strength, jitter_strength, size=len(df)
+    )
 
     # Create figure and subplots
     # check number of values of vib_angle_diff computed
@@ -1134,12 +1147,13 @@ def plot_vibration_analysis(df, save_path, swap_elbow_angle=False):
                 for label, color in range_color_map.items():
                     label_subset = subset[subset["elbow_angle_range"] == label]
                     ax2.scatter(
-                        label_subset[vib_freq_name],
+                        label_subset["jittered_vib_freq"],
                         vib_angle_diff[
                             label_subset.index
                         ],  # Ensure alignment with the subset
                         color=color,
-                        alpha=0.7,
+                        edgecolor="black",
+                        alpha=0.9,
                     )
                 ax2.set_title(f"Vib Angle Diff range {i}")
                 ax2.set_xlabel("Vibration Frequency (Hz)")
@@ -1149,11 +1163,12 @@ def plot_vibration_analysis(df, save_path, swap_elbow_angle=False):
         for label, color in range_color_map.items():
             subset = df[df["elbow_angle_range"] == label]
             ax2.scatter(
-                subset[vib_freq_name],
+                subset["jittered_vib_freq"],
                 subset[vib_angle_diff_name],
                 # label=f"{label}",
                 color=color,
-                alpha=0.7,
+                edgecolor="black",
+                alpha=0.9,
             )
         ax2.set_title("Vib Angle Diff")
         ax2.set_xlabel("Vibration Frequency (Hz)")

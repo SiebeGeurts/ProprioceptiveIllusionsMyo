@@ -682,65 +682,68 @@ class Trainer:
         acc_val = np.zeros(num_iter)
         loss_val = np.zeros(num_iter)
 
-        # go through data
-        for i in range(num_iter):
+        # go through data -- no_grad since eval() never calls backward()/optimizer.step(),
+        # so tracking gradients here only costs memory (an autograd graph held for
+        # nothing) without ever being used; this doesn't change any computed value
+        with torch.no_grad():
+            for i in range(num_iter):
 
-            # forward pass
-            batch_X, batch_y = self.dataset.next_valbatch(self.batch_size, step=i)
-            # normalize
-            epsilon = 1e-8  # Small constant to prevent division by zero
-            if type(self.train_data_mean) == torch.Tensor:  # Normalize by tensor
-                batch_X = (
-                    batch_X.to(self.device) - self.train_data_mean.to(self.device)
-                ) / (self.train_data_std.to(self.device) + epsilon)
-                batch_y = (
-                    batch_y.to(self.device) - self.label_mean.to(self.device)
-                ) / (self.label_max.to(self.device) + epsilon)
-            else:  # Or float
-                batch_X = (batch_X.to(self.device) - self.train_data_mean) / (
-                    self.train_data_std + epsilon
-                )
-                batch_y = (batch_y.to(self.device) - self.label_mean) / (
-                    self.label_max + epsilon
-                )
+                # forward pass
+                batch_X, batch_y = self.dataset.next_valbatch(self.batch_size, step=i)
+                # normalize
+                epsilon = 1e-8  # Small constant to prevent division by zero
+                if type(self.train_data_mean) == torch.Tensor:  # Normalize by tensor
+                    batch_X = (
+                        batch_X.to(self.device) - self.train_data_mean.to(self.device)
+                    ) / (self.train_data_std.to(self.device) + epsilon)
+                    batch_y = (
+                        batch_y.to(self.device) - self.label_mean.to(self.device)
+                    ) / (self.label_max.to(self.device) + epsilon)
+                else:  # Or float
+                    batch_X = (batch_X.to(self.device) - self.train_data_mean) / (
+                        self.train_data_std + epsilon
+                    )
+                    batch_y = (batch_y.to(self.device) - self.label_mean) / (
+                        self.label_max + epsilon
+                    )
 
-            scores, prob, _ = self.model(batch_X)
-            if self.dataset.ground_truth == "labels":
-                loss = coord_angles_loss(scores, batch_y)
-            else:
-                loss = self.criterion(scores, batch_y)
-            loss_val[i] = loss.item()
+                scores, prob, _ = self.model(batch_X)
+                if self.dataset.ground_truth == "labels":
+                    loss = coord_angles_loss(scores, batch_y)
+                else:
+                    loss = self.criterion(scores, batch_y)
+                loss_val[i] = loss.item()
 
-            # compute accuracy
-            if self.model.task == "letter_recognition":
-                acc_val[i] = torch.mean(
-                    (batch_y == torch.argmax(prob, dim=1).squeeze(0)).type(
-                        torch.FloatTensor
+                # compute accuracy
+                if self.model.task == "letter_recognition":
+                    acc_val[i] = torch.mean(
+                        (batch_y == torch.argmax(prob, dim=1).squeeze(0)).type(
+                            torch.FloatTensor
+                        )
                     )
-                )
-            elif (
-                self.model.task == "letter_reconstruction"
-                or self.model.task == "elbow_flex"
-            ):
-                acc_val[i] = torch.mean(
-                    torch.norm(
-                        torch.subtract(scores.reshape(-1, 3), batch_y.reshape(-1, 3)),
-                        dim=1,
+                elif (
+                    self.model.task == "letter_reconstruction"
+                    or self.model.task == "elbow_flex"
+                ):
+                    acc_val[i] = torch.mean(
+                        torch.norm(
+                            torch.subtract(scores.reshape(-1, 3), batch_y.reshape(-1, 3)),
+                            dim=1,
+                        )
                     )
-                )
-            elif (
-                self.model.task == "letter_reconstruction_joints"
-                or self.model.task == "elbow_flex_joints"
-            ):
-                acc_val[i] = torch.mean(
-                    torch.norm(
-                        torch.subtract(
-                            scores[:, :, :3].reshape(-1, 3),
-                            batch_y[:, :, :3].reshape(-1, 3),
-                        ),
-                        dim=1,
+                elif (
+                    self.model.task == "letter_reconstruction_joints"
+                    or self.model.task == "elbow_flex_joints"
+                ):
+                    acc_val[i] = torch.mean(
+                        torch.norm(
+                            torch.subtract(
+                                scores[:, :, :3].reshape(-1, 3),
+                                batch_y[:, :, :3].reshape(-1, 3),
+                            ),
+                            dim=1,
+                        )
                     )
-                )
 
         return loss_val.mean(), acc_val.mean()
 

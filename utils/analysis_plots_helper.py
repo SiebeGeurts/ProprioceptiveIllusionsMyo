@@ -691,8 +691,9 @@ def plot_angleOffset_vs_vibration(
     
     if per_seed is not None:
         # Loop over each unique training_seed and assign a unique marker
-        unique_seeds = df[per_seed].unique()
-        unique_seeds.sort()
+        # (sorted(), not .sort() -- df[per_seed].unique() is a pandas StringArray
+        # for string-dtype columns like train_seed/coef_seed, which has no .sort())
+        unique_seeds = sorted(df[per_seed].unique())
         grad = generate_color_gradient(color, num_shades=len(unique_seeds))
         for i, seed in enumerate(unique_seeds):
             seed_data = df[df[per_seed] == seed]
@@ -1011,8 +1012,8 @@ def plot_vibration_vs_input(
     for j, muscle_idx in enumerate(muscle_idxs):
         for c, channel in enumerate(channels):
             if per_seed is not None:
-                seeds = data[per_seed].unique()
-                seeds.sort()
+                # sorted(), not .sort() -- see note above on StringArray
+                seeds = sorted(data[per_seed].unique())
                 for i, seed in enumerate(seeds):
                     inputs_at_time = []
                     m = seed_marker_map[seed]

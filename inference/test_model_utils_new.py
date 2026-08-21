@@ -314,8 +314,20 @@ class Tester:
         return batch_X_s, batch_y.to(self.device)
 
     def _compute_scores(self, batch_X_s):
-        """Perform a forward pass through the model and unnormalize scores."""
-        scores, prob, _ = self.model(batch_X_s)
+        """Perform a forward pass through the model and unnormalize scores.
+
+        Wrapped in torch.no_grad(): this is pure inference (Tester is never used
+        for backprop -- the saliency/integrated-gradients code elsewhere calls the
+        model directly with its own requires_grad_() setup, not through here), so
+        tracking gradients here only builds and retains a full autograd graph for
+        every batch/frequency for no reason. That's what was OOM-ing the vibration
+        sweep: evaluate_model_with_vibrations() calls this indirectly up to 3x per
+        vibration frequency (evaluate_model() once, get_scores_probabilities() twice
+        -- baseline and vibrated), each retaining every layer's activations because
+        nothing ever detached them.
+        """
+        with torch.no_grad():
+            scores, prob, _ = self.model(batch_X_s)
         if type(self.label_max) == torch.Tensor:
             scores = scores.to(self.device) * self.label_max.to(
                 self.device
@@ -1043,7 +1055,14 @@ def evaluate_model_with_vibrations_ranges(
                 "channel_indices": channel_indices,
             }
             row.update({key: vib_metrics[key][i] for key in vib_metrics})
-            if i in selected_indices:
+            # Only collect these when actually needed for plot_inputs_and_elbow_angings
+            # (gated the same way by plot_individual / --save_plots in
+            # test_model_vib_multipleFs.py's main()). Each is a full (channels,
+            # muscles, time) tensor -- ~10MB+ apiece once n_aff is large, and with
+            # 10 selected trials x every vibration frequency x 2 (vib/no-vib), that
+            # added up to a few GB of unused object-dtype columns, which is what was
+            # overflowing pandas/PyTables' HDF5 writer on save further down.
+            if plot_individual and i in selected_indices:
                 row.update(
                     {
                         "true_outputs": batch_y_s[i].cpu().detach().numpy(),
@@ -1199,7 +1218,14 @@ def evaluate_model_with_vibrations(
                 "channel_indices": channel_indices,
             }
             row.update({key: vib_metrics[key][i] for key in vib_metrics})
-            if i in selected_indices:
+            # Only collect these when actually needed for plot_inputs_and_elbow_angings
+            # (gated the same way by plot_individual / --save_plots in
+            # test_model_vib_multipleFs.py's main()). Each is a full (channels,
+            # muscles, time) tensor -- ~10MB+ apiece once n_aff is large, and with
+            # 10 selected trials x every vibration frequency x 2 (vib/no-vib), that
+            # added up to a few GB of unused object-dtype columns, which is what was
+            # overflowing pandas/PyTables' HDF5 writer on save further down.
+            if plot_individual and i in selected_indices:
                 row.update(
                     {
                         "true_outputs": batch_y_s[i].cpu().detach().numpy(),
